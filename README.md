@@ -9,7 +9,7 @@ retention).
 **Schema scale:** 8 categories · 55 products · 150 customers · 2,500
 orders · 5,246 order items spanning Jan 2024 – Apr 2026.
 
-The whole thing runs in one command via `docker compose up -d` — Postgres
+The whole thing runs in one command via `docker compose up -d` : Postgres
 boots, the schema is created, and the seed data is loaded automatically.
 
 ## What this project shows
@@ -17,38 +17,38 @@ boots, the schema is created, and the seed data is loaded automatically.
 | SQL concept | Demonstrated in |
 |---|---|
 | **CTEs** (multi-step `WITH`) | Q02, Q03, Q04, Q06, Q07, Q09, Q10 |
-| **Window functions** — `SUM OVER`, `ROW_NUMBER`, `DENSE_RANK`, `NTILE` | Q02, Q03, Q06, Q07, Q09 |
+| **Window functions** : `SUM OVER`, `ROW_NUMBER`, `DENSE_RANK`, `NTILE` | Q02, Q03, Q06, Q07, Q09 |
 | **Cumulative running totals** | Q02, Q06 |
 | **Partitioned ranking** | Q03 (top product per category) |
 | **`FILTER` clause** for conditional aggregation | Q04, Q08 |
-| **Anti-joins** — `NOT EXISTS`, `LEFT JOIN ... IS NULL` | Q05, Q10 |
-| **Date arithmetic** — `DATE_TRUNC`, `INTERVAL`, `AGE()` | Q02, Q04, Q05, Q08, Q10 |
+| **Anti-joins** : `NOT EXISTS`, `LEFT JOIN ... IS NULL` | Q05, Q10 |
+| **Date arithmetic** : `DATE_TRUNC`, `INTERVAL`, `AGE()` | Q02, Q04, Q05, Q08, Q10 |
 | **Pareto analysis** (cumulative %) | Q06 |
 | **RFM segmentation** (Recency/Frequency/Monetary with `NTILE`) | Q09 |
 | **Cohort retention** by signup month | Q04 |
 
 ## The 10 queries
 
-1. **Top 10 customers by lifetime spend** — basic aggregation across the
+1. **Top 10 customers by lifetime spend** : basic aggregation across the
    3-table join (`customers` → `orders` → `order_items`).
-2. **Monthly revenue with running total** — `DATE_TRUNC` + windowed
+2. **Monthly revenue with running total** : `DATE_TRUNC` + windowed
    `SUM OVER (ORDER BY month)` for cumulative-to-date.
-3. **Top product per category** — `DENSE_RANK() OVER (PARTITION BY
+3. **Top product per category** : `DENSE_RANK() OVER (PARTITION BY
    category)` then filter to rank = 1.
-4. **Customer cohort retention** — bucket customers by signup month, then
+4. **Customer cohort retention** : bucket customers by signup month, then
    count distinct returners at M+0 / M+1 / M+3 / M+6 / M+12 using
    `FILTER (WHERE months_since_signup = N)`.
-5. **Lapsed customers** (no order in last 90 days) — anti-join with
+5. **Lapsed customers** (no order in last 90 days) : anti-join with
    `NOT EXISTS` against an order-history sub-window.
-6. **Pareto analysis** — cumulative revenue % by customer rank, showing
+6. **Pareto analysis** : cumulative revenue % by customer rank, showing
    how concentrated revenue is.
-7. **First-order vs subsequent-order basket size** — `ROW_NUMBER` per
+7. **First-order vs subsequent-order basket size** : `ROW_NUMBER` per
    customer to label the first order, then group-by-bucket comparison.
-8. **Monthly order-status mix** — delivery rate / cancellation rate using
+8. **Monthly order-status mix** : delivery rate / cancellation rate using
    the `FILTER` clause for conditional counts.
-9. **RFM customer segmentation** — `NTILE(5)` bucketing on Recency,
+9. **RFM customer segmentation** : `NTILE(5)` bucketing on Recency,
    Frequency, Monetary, plus a `CASE`-driven segment label.
-10. **Underperforming products** — active SKUs with zero revenue in last
+10. **Underperforming products** : active SKUs with zero revenue in last
     6 months via `LEFT JOIN ... COALESCE(... ,0) = 0`.
 
 ## Run it
