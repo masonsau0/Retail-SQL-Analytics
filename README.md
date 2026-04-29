@@ -88,6 +88,18 @@ This connects via `psycopg`, splits `queries.sql` on the `-- Q<NN>`
 markers, runs each query, and prints the result as a Markdown table with
 elapsed time per query.
 
+### Interactive Streamlit dashboard
+
+```bash
+pip install -r requirements.txt
+streamlit run retail_analytics_app.py
+```
+
+Renders each query side-by-side with its SQL, result table, and a
+contextual chart — monthly revenue dual-axis (Q02), cohort retention
+heatmap (Q04), Pareto curve with 80% reference line (Q06), monthly
+order-status mix (Q08), and RFM segment distribution (Q09).
+
 ### Tear down
 
 ```bash
@@ -106,7 +118,8 @@ docker compose down -v         # also drops the data volume
 ├── generate_data.py            ← regenerates init/02_seed.sql
 ├── queries.sql                 ← the 10 analytical queries
 ├── run_queries.py              ← Python runner that executes all queries
-├── requirements.txt            ← psycopg, tabulate
+├── retail_analytics_app.py     ← Streamlit dashboard (per-query view + charts)
+├── requirements.txt            ← psycopg, tabulate, streamlit, plotly
 ├── LICENSE
 └── README.md
 ```
@@ -128,4 +141,5 @@ Edit constants at the top of `generate_data.py` (`N_CUSTOMERS`,
 ## Stack
 
 **PostgreSQL 16** · **Docker / docker-compose** · **psycopg 3**
-(Python driver) · **tabulate** (formatted output)
+(Python driver) · **Streamlit + Plotly** (interactive dashboard) ·
+**tabulate** (formatted CLI output)

@@ -1,2 +1,5 @@
 psycopg[binary]
 tabulate
+streamlit
+pandas
+plotly
