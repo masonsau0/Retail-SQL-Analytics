@@ -1,5 +1,7 @@
 # Retail SQL Analytics
 
+**[Live demo](https://mason-retail-sql-analytics.streamlit.app/)**: runs in the browser, no install required.
+
 A **PostgreSQL analytics playground** built around a synthetic retail
 schema (customers, products, orders, order items, categories) with **10
 analytical queries** that demonstrate window functions, CTEs, anti-joins,
@@ -100,6 +102,14 @@ contextual chart — monthly revenue dual-axis (Q02), cohort retention
 heatmap (Q04), Pareto curve with 80% reference line (Q06), monthly
 order-status mix (Q08), and RFM segment distribution (Q09).
 
+The app connects to whichever backend is reachable: the docker-composed
+PostgreSQL if it's running locally, otherwise an embedded **DuckDB**
+in-memory fallback that loads the same `init/02_seed.sql` data and
+executes the same PG-style queries (window functions, CTEs, `FILTER`,
+`NTILE`, `DATE_TRUNC`, `INTERVAL`, `AGE`). The hosted Streamlit Cloud
+demo above runs on the DuckDB path since Cloud cannot host a Postgres
+container.
+
 ### Tear down
 
 ```bash
@@ -119,7 +129,7 @@ docker compose down -v         # also drops the data volume
 ├── queries.sql                 ← the 10 analytical queries
 ├── run_queries.py              ← Python runner that executes all queries
 ├── retail_analytics_app.py     ← Streamlit dashboard (per-query view + charts)
-├── requirements.txt            ← psycopg, tabulate, streamlit, plotly
+├── requirements.txt            ← psycopg, tabulate, streamlit, plotly, duckdb
 ├── LICENSE
 └── README.md
 ```
@@ -142,4 +152,5 @@ Edit constants at the top of `generate_data.py` (`N_CUSTOMERS`,
 
 **PostgreSQL 16** · **Docker / docker-compose** · **psycopg 3**
 (Python driver) · **Streamlit + Plotly** (interactive dashboard) ·
-**tabulate** (formatted CLI output)
+**DuckDB** (embedded fallback for the hosted demo) · **tabulate**
+(formatted CLI output)

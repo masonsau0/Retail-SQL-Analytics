@@ -1,13 +1,17 @@
 """Streamlit dashboard for the Retail SQL Analytics queries.
 
-Connects to the docker-composed Postgres, runs each of the 10 analytical
-queries on demand, and renders results as interactive tables plus
-contextual charts (monthly revenue trend, cohort heatmap, Pareto curve,
-RFM segment distribution, etc.).
+Renders each of 10 PostgreSQL analytical queries side-by-side with its
+SQL, result table, and a contextual chart (Pareto, cohort heatmap, RFM
+distribution, etc.).
+
+Connects to whichever data backend is available:
+    - PostgreSQL via the docker-composed `retail` container, if reachable
+    - DuckDB embedded in-memory as a zero-install fallback (used by the
+      hosted Streamlit Cloud demo since Cloud cannot run Docker)
 
 Run with::
 
-    docker compose up -d
+    docker compose up -d                  # optional — enables the PG path
     pip install -r requirements.txt
     streamlit run retail_analytics_app.py
 """
@@ -18,17 +22,85 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import psycopg
 import streamlit as st
 
 DB_DSN = "host=localhost port=5432 dbname=retail user=analyst password=analyst"
 QUERIES_FILE = Path(__file__).parent / "queries.sql"
+SEED_FILE = Path(__file__).parent / "init" / "02_seed.sql"
 
 st.set_page_config(page_title="Retail SQL Analytics", layout="wide", page_icon="🛒")
+
+
+# DuckDB-equivalent of init/01_schema.sql. SERIAL is replaced by sequences
+# with nextval() defaults so the existing 02_seed.sql (which omits the PK
+# columns and relies on auto-assignment) loads as-is. Foreign keys are
+# omitted — the seed data is already correctly related, and DuckDB doesn't
+# enforce FK constraints during INSERT anyway.
+DUCKDB_SCHEMA = """
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS customers;
+
+DROP SEQUENCE IF EXISTS seq_customers;
+DROP SEQUENCE IF EXISTS seq_categories;
+DROP SEQUENCE IF EXISTS seq_products;
+DROP SEQUENCE IF EXISTS seq_orders;
+DROP SEQUENCE IF EXISTS seq_order_items;
+
+CREATE SEQUENCE seq_customers START 1;
+CREATE SEQUENCE seq_categories START 1;
+CREATE SEQUENCE seq_products START 1;
+CREATE SEQUENCE seq_orders START 1;
+CREATE SEQUENCE seq_order_items START 1;
+
+CREATE TABLE customers (
+    customer_id      INTEGER PRIMARY KEY DEFAULT nextval('seq_customers'),
+    email            TEXT UNIQUE NOT NULL,
+    full_name        TEXT NOT NULL,
+    country          TEXT NOT NULL,
+    signup_date      DATE NOT NULL,
+    marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE TABLE categories (
+    category_id INTEGER PRIMARY KEY DEFAULT nextval('seq_categories'),
+    name        TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE products (
+    product_id  INTEGER PRIMARY KEY DEFAULT nextval('seq_products'),
+    sku         TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    category_id INTEGER NOT NULL,
+    list_price  DECIMAL(10, 2) NOT NULL CHECK (list_price >= 0),
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE TABLE orders (
+    order_id      INTEGER PRIMARY KEY DEFAULT nextval('seq_orders'),
+    customer_id   INTEGER NOT NULL,
+    order_date    TIMESTAMP NOT NULL,
+    status        TEXT NOT NULL
+                  CHECK (status IN ('placed','shipped','delivered','cancelled','returned')),
+    shipping_cost DECIMAL(10, 2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE order_items (
+    order_item_id INTEGER PRIMARY KEY DEFAULT nextval('seq_order_items'),
+    order_id      INTEGER NOT NULL,
+    product_id    INTEGER NOT NULL,
+    quantity      INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price    DECIMAL(10, 2) NOT NULL CHECK (unit_price >= 0),
+    discount      DECIMAL(10, 2) NOT NULL DEFAULT 0 CHECK (discount >= 0)
+);
+"""
 
 
 @dataclass
@@ -38,6 +110,15 @@ class Query:
     question: str
     concepts: str
     sql: str
+
+
+@dataclass
+class DB:
+    kind: str         # "postgres" or "duckdb"
+    conn: Any
+    label: str        # short badge text
+    n_customers: int
+    n_orders: int
 
 
 @st.cache_data
@@ -66,7 +147,6 @@ def load_queries() -> list[Query]:
             else:
                 seen_sql = True
                 sql_lines.append(line)
-        # Trim trailing blank lines and the next query's leading comment divider
         while sql_lines and (
             not sql_lines[-1].strip()
             or sql_lines[-1].strip().startswith("--")
@@ -95,24 +175,61 @@ def load_queries() -> list[Query]:
     return out
 
 
-@st.cache_resource
-def get_connection(dsn: str):
-    return psycopg.connect(dsn, autocommit=True)
+def _try_postgres() -> DB | None:
+    try:
+        import psycopg
+    except ImportError:
+        return None
+    try:
+        conn = psycopg.connect(DB_DSN, connect_timeout=2, autocommit=True)
+    except Exception:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM customers")
+            n_c = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM orders")
+            n_o = cur.fetchone()[0]
+    except Exception:
+        conn.close()
+        return None
+    return DB("postgres", conn, "PostgreSQL (Docker)", n_c, n_o)
 
 
-def fetch_df(conn, sql: str) -> pd.DataFrame:
-    with conn.cursor() as cur:
-        cur.execute(sql)
-        cols = [d.name for d in cur.description]
-        rows = cur.fetchall()
-    return pd.DataFrame(rows, columns=cols)
+def _build_duckdb() -> DB:
+    import duckdb
+    conn = duckdb.connect(":memory:")
+    conn.execute(DUCKDB_SCHEMA)
+    seed_sql = SEED_FILE.read_text(encoding="utf-8")
+    conn.execute(seed_sql)
+    n_c = conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0]
+    n_o = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    return DB("duckdb", conn, "DuckDB (embedded)", n_c, n_o)
+
+
+@st.cache_resource(show_spinner="Connecting to database…")
+def get_db() -> DB:
+    pg = _try_postgres()
+    if pg is not None:
+        return pg
+    return _build_duckdb()
+
+
+def fetch_df(db: DB, sql: str) -> pd.DataFrame:
+    if db.kind == "postgres":
+        with db.conn.cursor() as cur:
+            cur.execute(sql)
+            cols = [d.name for d in cur.description]
+            rows = cur.fetchall()
+        return pd.DataFrame(rows, columns=cols)
+    return db.conn.execute(sql).df()
 
 
 @st.cache_data(show_spinner=False)
-def run_query(qid: str, sql: str) -> tuple[pd.DataFrame, float]:
-    conn = get_connection(DB_DSN)
+def run_query(_db_kind: str, qid: str, sql: str) -> tuple[pd.DataFrame, float]:
+    db = get_db()
     t0 = time.perf_counter()
-    df = fetch_df(conn, sql)
+    df = fetch_df(db, sql)
     elapsed_ms = (time.perf_counter() - t0) * 1000
     return df, elapsed_ms
 
@@ -125,7 +242,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             labels={"lifetime_revenue": "Lifetime revenue ($)", "full_name": "Customer"},
         )
         fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q02":
         fig = go.Figure()
@@ -141,7 +258,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             height=420, margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="h", y=1.1),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q03":
         plot_df = df.sort_values("revenue", ascending=True)
@@ -158,7 +275,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             height=420, margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="v", y=1, x=1.02),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q04":
         cols = ["m0", "m1", "m3", "m6", "m12"]
@@ -169,7 +286,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             labels=dict(x="Months since signup", y="Cohort", color="Customers"),
         )
         fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q06":
         fig = go.Figure()
@@ -193,7 +310,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             height=420, margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="h", y=1.1),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q07":
         fig = px.bar(
@@ -201,7 +318,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             labels={"avg_basket": "Avg basket ($)", "bucket": ""},
         )
         fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q08":
         plot_df = df.melt(
@@ -214,7 +331,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
             labels={"orders": "Order count"},
         )
         fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     elif qid == "Q09":
         seg_counts = df["segment"].value_counts().reset_index()
@@ -226,7 +343,7 @@ def render_chart(qid: str, df: pd.DataFrame) -> None:
         fig.update_layout(
             height=420, margin=dict(l=0, r=0, t=10, b=0), showlegend=False,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 # --- UI ----------------------------------------------------------------------
@@ -239,24 +356,19 @@ st.caption(
     "2,500 orders · 5,246 order items)."
 )
 
-try:
-    conn = get_connection(DB_DSN)
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM customers")
-        n_customers = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM orders")
-        n_orders = cur.fetchone()[0]
-    st.success(
-        f"Connected to Postgres · {n_customers} customers, {n_orders} orders "
-        f"in `retail`"
+db = get_db()
+badge = "🐘" if db.kind == "postgres" else "🦆"
+st.success(
+    f"{badge} **{db.label}** · {db.n_customers} customers · {db.n_orders} orders"
+)
+if db.kind == "duckdb":
+    st.caption(
+        "Running on the embedded DuckDB fallback. The queries below use "
+        "standard PostgreSQL syntax (window functions, CTEs, FILTER, NTILE, "
+        "DATE_TRUNC, INTERVAL, AGE) which DuckDB executes natively. To run "
+        "them against actual PostgreSQL instead, `docker compose up -d` "
+        "from the project root."
     )
-except psycopg.OperationalError as e:
-    st.error(
-        f"Could not connect to Postgres at `{DB_DSN}`.\n\n"
-        f"**Fix:** run `docker compose up -d` from the project root, then "
-        f"refresh this page.\n\n```\n{e}\n```"
-    )
-    st.stop()
 
 queries = load_queries()
 options = [f"{q.qid} — {q.label}" for q in queries]
@@ -276,7 +388,11 @@ if q.concepts:
 with st.expander("View SQL", expanded=False):
     st.code(q.sql, language="sql")
 
-df, elapsed_ms = run_query(q.qid, q.sql)
+try:
+    df, elapsed_ms = run_query(db.kind, q.qid, q.sql)
+except Exception as e:
+    st.error(f"Query failed: {e}")
+    st.stop()
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Rows", len(df))
@@ -284,7 +400,7 @@ c2.metric("Columns", len(df.columns))
 c3.metric("Elapsed", f"{elapsed_ms:.1f} ms")
 
 st.subheader("Result")
-st.dataframe(df, use_container_width=True, hide_index=True)
+st.dataframe(df, width="stretch", hide_index=True)
 
 CHART_QIDS = {"Q01", "Q02", "Q03", "Q04", "Q06", "Q07", "Q08", "Q09"}
 if q.qid in CHART_QIDS:
