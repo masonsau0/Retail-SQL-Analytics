@@ -356,6 +356,58 @@ st.caption(
     "2,500 orders · 5,246 order items)."
 )
 
+with st.expander("How to use this app", expanded=False):
+    st.markdown("""
+**What this app does in plain English.**
+A retail company runs an online store: customers, products, orders, and
+the line items inside each order. This app shows ten SQL queries that
+answer real business questions an analyst gets every week — *who are
+our top customers? what's the revenue trend? which customers haven't
+ordered in a while? are a few buyers driving most of our revenue?* —
+running them live against a synthetic dataset (150 customers, 2,500
+orders, 5,246 line items spanning 2024–2026).
+
+**Quick start (30 seconds).**
+1. Pick a query in the left sidebar (Q01 through Q10).
+2. Read the **Business question** and **SQL concepts** at the top.
+3. Expand **View SQL** to see the exact query that ran.
+4. Scroll down for the **Result** table and the **Visualisation** chart.
+
+**What you'll see per query.**
+- **Business question** — what an analyst is trying to answer.
+- **SQL concepts** — the techniques used (window functions, `FILTER`
+  clause, `NTILE`, cohort math, anti-joins). Useful if you're brushing
+  up on SQL.
+- **View SQL** — collapsible panel with the exact query.
+- **Rows / Columns / Elapsed** — how many rows came back and how long
+  the query took.
+- **Result** — sortable table of returned rows.
+- **Visualisation** — a chart for the queries where one helps: Pareto
+  curve, cohort heatmap, monthly revenue dual-axis, RFM segment
+  distribution, and so on.
+
+**The 10 queries at a glance.**
+- **Q01–Q03** — top-N analysis: top customers, monthly revenue with
+  running total, bestseller per category.
+- **Q04** — cohort retention: how many customers from each signup month
+  are still ordering N months later.
+- **Q05** — lapsed customers: who hasn't ordered in 90 days (anti-join
+  with `NOT EXISTS`).
+- **Q06** — Pareto analysis: what % of customers drive 80 % of revenue?
+- **Q07** — first-order vs subsequent-order basket size.
+- **Q08** — monthly order-status mix (delivered / cancelled / returned).
+- **Q09** — RFM segmentation: bucket every customer on Recency /
+  Frequency / Monetary into a 5×5×5 grid using `NTILE(5)`.
+- **Q10** — underperforming products: active SKUs with no revenue in
+  the last 6 months (`LEFT JOIN … IS NULL`).
+
+**Try this.** Open **Q06** — the Pareto curve's cumulative-% line crosses
+80 % well before customer rank reaches 80 %, the classic revenue
+concentration pattern. Then jump to **Q09** and notice how few customers
+fall in the **Champions** segment (R = 1, F = 1, M = 1) — those are the
+small group of buyers driving most of the spend you just saw in Q06.
+""")
+
 db = get_db()
 badge = "🐘" if db.kind == "postgres" else "🦆"
 st.success(
